@@ -12,6 +12,7 @@ import java.util.Map;
 
 /**
  * Created by shaopengxiang on 2017/12/18.
+ * 单例模式
  */
 
 public class PlayerManager {

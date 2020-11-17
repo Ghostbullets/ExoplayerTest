@@ -1,7 +1,7 @@
 package com.sogo.exoplayer;
 
 import android.content.Context;
-import android.support.annotation.Nullable;
+import androidx.annotation.Nullable;
 import android.text.TextUtils;
 import android.view.View;
 import android.widget.ImageView;
@@ -23,6 +23,7 @@ import java.io.IOException;
 
 /**
  * Created by shaopengxiang on 2017/12/18.
+ * 播放视图管理----view显示
  */
 
 public class LdExoPlayerController implements PlayerManager.PlayerHolder {
