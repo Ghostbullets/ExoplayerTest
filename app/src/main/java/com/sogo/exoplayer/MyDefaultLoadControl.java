@@ -387,7 +387,7 @@ public class MyDefaultLoadControl implements LoadControl {
 
     @Override
     public boolean shouldContinueLoading(long bufferedDurationUs, float playbackSpeed) {
-        if (VUtil.isWifiConnected(VUtil.getApplication())) {//如果没有wifi连接则判断是否是用户主动播放
+        if (VUtil.isWifiConnected(VUtil.getApplicationContext())) {//如果没有wifi连接则判断是否是用户主动播放
             if (!isWithoutWifiContinueLoading) {// 如果不是用户主动点击播放, 那就是预加载了, 那么返回, 不再预加载
                 return false;
             }

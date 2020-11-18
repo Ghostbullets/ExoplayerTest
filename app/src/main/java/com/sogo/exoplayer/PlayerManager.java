@@ -40,15 +40,11 @@ public class PlayerManager {
     }
 
     public void preAttch(final String videoUrl, PlayerHolder playerHolder) {
+        if (currentPlayerHolders.containsKey(videoUrl))
+            return;
         currentPlayerHolders.put(videoUrl, playerHolder);
         if (USE_PRELOAD) {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    player.preload(videoUrl);
-                }
-            }).start();
-
+            PlayerCacheThreadManager.getInstance().executeRunnable(() -> player.preload(videoUrl));
         }
     }
 
@@ -59,7 +55,7 @@ public class PlayerManager {
     }
 
     public void preload(int pos, String videoUrl) {
-        if (!VUtil.isWifiConnected(VUtil.getApplication())) {
+        if (!VUtil.isWifiConnected(VUtil.getApplicationContext())) {
             VLog.d(TAG, "preload[" + pos + "]: NO WIFI NO PRELOAD!" + videoUrl);
             return;
         }

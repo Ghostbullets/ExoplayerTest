@@ -6,20 +6,18 @@ import android.net.Uri;
 
 import com.google.android.exoplayer2.DefaultRenderersFactory;
 import com.google.android.exoplayer2.ExoPlayer;
-import com.google.android.exoplayer2.ExoPlayerFactory;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.analytics.AnalyticsCollector;
 import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory;
 import com.google.android.exoplayer2.extractor.ExtractorsFactory;
-import com.google.android.exoplayer2.source.ExtractorMediaSource;
 import com.google.android.exoplayer2.source.MediaSource;
+import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.trackselection.AdaptiveTrackSelection;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
 import com.google.android.exoplayer2.trackselection.TrackSelection;
 import com.google.android.exoplayer2.trackselection.TrackSelector;
 import com.google.android.exoplayer2.ui.SimpleExoPlayerView;
-import com.google.android.exoplayer2.upstream.BandwidthMeter;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DataSpec;
 import com.google.android.exoplayer2.upstream.DefaultBandwidthMeter;
@@ -44,13 +42,18 @@ import java.io.IOException;
 public final class PlayerWrapper {
 
     private static final String TAG = "Player.Wrapper";
-    private static PlayerWrapper instance = new PlayerWrapper();
+    private static PlayerWrapper instance;
 
     public static PlayerWrapper getInstance() {
+        if (instance == null) {
+            synchronized (PlayerWrapper.class) {
+                if (instance == null) {
+                    instance = new PlayerWrapper();
+                }
+            }
+        }
         return instance;
     }
-
-//    private final ImaAdsLoader adsLoader;
 
     private SimpleExoPlayer player;
     private SimpleExoPlayerView simpleExoPlayerView;
@@ -85,26 +88,37 @@ public final class PlayerWrapper {
 
     private PlayerWrapper() {
         /**
-         * 预加载机制
+         * 预加载数据准备机制
          */
         //创建一个DataSource对象，通过它来下载多媒体数据
-        dataSourceFactory = new DefaultDataSourceFactory(VUtil.getApplication(),
-                Util.getUserAgent(VUtil.getApplication(), VUtil.getApplication().getString(R.string.app_name)));
+        dataSourceFactory = new DefaultDataSourceFactory(VUtil.getApplicationContext(),
+                Util.getUserAgent(VUtil.getApplicationContext(), VUtil.getApplicationContext().getString(R.string.app_name)));
         //创建本地缓存目录，凡是下载的数据会在设定的缓存目录中保存下来
-        cacheFile = new File(VUtil.getApplication().getExternalCacheDir().getAbsolutePath(), "video");
+        cacheFile = new File(VUtil.getApplicationContext().getExternalCacheDir().getAbsolutePath(), "video");
         VLog.d(TAG, "PlayerWrapper()  cache file:" + cacheFile.getAbsolutePath());
         // 本地最多保存512M, 按照LRU原则删除老数据
+        //todo 判断当前剩余空间大小
         simpleCache = new SimpleCache(cacheFile, new LeastRecentlyUsedCacheEvictor(512 * 1024 * 1024));
         //创建一个缓存数据来源 工厂
         cachedDataSourceFactory = new CacheDataSourceFactory(simpleCache, dataSourceFactory);
+        //使用默认参数创建自适应跟踪选择工厂
         TrackSelection.Factory videoTrackSelectionFactory =
                 new AdaptiveTrackSelection.Factory();
-        mTrackSelector = new DefaultTrackSelector(VUtil.getApplication(),videoTrackSelectionFactory);
+        mTrackSelector = new DefaultTrackSelector(VUtil.getApplicationContext(),videoTrackSelectionFactory);
     }
 
+    /**
+     * 当调用该方法时，立刻就会尝试去预加载，缓存videoUri地址的视频的0-512K(可以调整，最大不超过5M)
+     * {@link com.google.android.exoplayer2.upstream.cache.CacheDataSink#DEFAULT_FRAGMENT_SIZE},
+     * {@link com.google.android.exoplayer2.upstream.cache.CacheDataSink#open(DataSpec)} 处设置了dataSpecFragmentSize(用于预加载size限制),
+     * 的视频数据，如果本地没有缓存的话。
+     *
+     * {@link SimpleCache#startFile(String, long, long)} 位置设置了预加载缓存保存的本地地址
+     * @param videoUri
+     */
     public void preload(String videoUri) {
         //数据规范 1:url转uri ;2从流的哪个位置开始缓存，这里为0即流的起点处；3:缓存多少，这里是512K;4:自定义缓存健，不传使用默认值
-        DataSpec dataSpec = new DataSpec(Uri.parse(videoUri), 0, 512 * 1024, null);
+        DataSpec dataSpec = new DataSpec(Uri.parse(videoUri), 0, 512 * 1024/*CacheDataSink.DEFAULT_FRAGMENT_SIZE*/, null);
         try {
             CacheUtil.ProgressListener progressListener = new CacheUtil.ProgressListener() {
                 @Override
@@ -142,12 +156,23 @@ public final class PlayerWrapper {
         this.simpleExoPlayerView = simpleExoPlayerView;
         //2.11.3
 
-        MyDefaultLoadControl loadControl = new MyDefaultLoadControl.Builder().createDefaultLoadControl();
+        MyDefaultLoadControl loadControl = new MyDefaultLoadControl.Builder()
+                //播放器触发加载数据的时机，缓冲区数据duration time 小于该值时,毫秒为单位；播放器进行加载数据的上限，即当前缓冲区AV数据 duration time 小于该值,毫秒为单位;
+                //也就是说,当缓冲区  duration time<minBufferMs时，开始请求缓冲
+                //        当缓冲区  duration time>=maxBufferMs时，停止请求缓冲
+
+                //定义了播放器播放数据的条件，即缓冲区 duration time 不小于bufferForPlaybackMs；
+                //播放器从 REBUFFER状态(REBUFFER是由于运行时缓冲区耗尽触发导致) 恢复为可播放状态后可播放AV数据的条件；即缓冲区 duration time 不小于bufferForPlaybackAfterRebufferMs
+
+                //在这里，当已缓冲区域(缓冲位置-当前播放位置)<360秒，开始请求数据到缓冲区；当已缓冲区域(缓冲位置-当前播放位置)>=600秒，停止请求；
+                //当已缓冲区域(缓冲位置-当前播放位置)>1秒，满足播放条件；seekTo到某个未缓冲位置时，当已缓冲区域(缓冲位置-当前seekTo位置)>=5秒时，满足播放条件
+                .setBufferDurationsMs(360000, 600000, 1000, 5000)
+                .createDefaultLoadControl();
         loadControl.setWithoutWifiContinueLoading(userAction);
         player = new SimpleExoPlayer.Builder(context, new DefaultRenderersFactory(context), mTrackSelector, loadControl,
                 DefaultBandwidthMeter.getSingletonInstance(context), Util.getLooper(),
                 new AnalyticsCollector(Clock.DEFAULT), true, Clock.DEFAULT)
-                .setBandwidthMeter(new DefaultBandwidthMeter.Builder(VUtil.getApplication()).build())//提供当前可用带宽的估计
+                .setBandwidthMeter(new DefaultBandwidthMeter.Builder(VUtil.getApplicationContext()).build())//提供当前可用带宽的估计
                 .build();
         //2.8.3
 //        player = ExoPlayerFactory.newSimpleInstance(new DefaultRenderersFactory(context),
@@ -167,8 +192,11 @@ public final class PlayerWrapper {
         isPlaying = false;
 //        player.seekTo(contentPosition);
         //这是一个代表将要被播放的媒体的MediaSource
-        videoSource = new ExtractorMediaSource(Uri.parse(mVideoUrl),
-                cachedDataSourceFactory, extractorsFactory, null, null);
+        //过时，实际上还是调用ProgressiveMediaSource
+//        videoSource = new ExtractorMediaSource(Uri.parse(mVideoUrl),
+//                cachedDataSourceFactory, extractorsFactory, null, null);
+        videoSource = new ProgressiveMediaSource.Factory(cachedDataSourceFactory,extractorsFactory)
+                .createMediaSource(Uri.parse(mVideoUrl));
         //使用资源准备播放器
         player.prepare(videoSource);
 
